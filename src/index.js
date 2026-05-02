@@ -1,10 +1,15 @@
 require("dotenv").config();
-
 const fs = require("fs");
 const path = require("path");
-const { Client, Collection, GatewayIntentBits } = require("discord.js");
+const {
+  Client,
+  Collection,
+  GatewayIntentBits,
+  REST,
+  Routes
+} = require("discord.js");
 
-console.log("🔥 Starting Bot...");
+console.log("🔥 Starting Bot (DEV MODE)...");
 
 // ===== CLIENT =====
 const client = new Client({
@@ -17,7 +22,7 @@ const client = new Client({
 
 client.commands = new Collection();
 
-// ===== SAFE COMMAND LOADER =====
+// ===== COMMAND LOADER =====
 const commandsPath = path.join(__dirname, "commands");
 
 function loadCommands(dir) {
@@ -27,38 +32,26 @@ function loadCommands(dir) {
     const filePath = path.join(dir, file);
 
     try {
-      // FOLDER → RECURSE
       if (fs.statSync(filePath).isDirectory()) {
         loadCommands(filePath);
         continue;
       }
 
-      // ONLY JS FILES
       if (!file.endsWith(".js")) continue;
 
-      // CLEAR CACHE (for reload support)
       delete require.cache[require.resolve(filePath)];
-
       const command = require(filePath);
 
-      // VALIDATION
       if (!command.data || !command.execute) {
-        console.log(`⚠️ Skipped invalid: ${file}`);
-        continue;
-      }
-
-      // DUPLICATE PROTECTION
-      if (client.commands.has(command.data.name)) {
-        console.log(`⚠️ Duplicate command: ${command.data.name}`);
+        console.log(`⚠️ Skipped: ${file}`);
         continue;
       }
 
       client.commands.set(command.data.name, command);
-
       console.log(`✅ Loaded: ${command.data.name}`);
 
     } catch (err) {
-      console.error(`❌ Error loading ${file}:`, err.message);
+      console.error(`❌ ${file}:`, err.message);
     }
   }
 }
@@ -78,7 +71,6 @@ function loadEvents() {
 
     try {
       delete require.cache[require.resolve(filePath)];
-
       const event = require(filePath);
 
       if (!event.name || !event.execute) {
@@ -96,15 +88,43 @@ function loadEvents() {
         );
       }
 
-      console.log(`📌 Loaded event: ${event.name}`);
+      console.log(`📌 Event: ${event.name}`);
 
     } catch (err) {
-      console.error(`❌ Event error (${file}):`, err.message);
+      console.error(`❌ Event ${file}:`, err.message);
     }
   }
 }
 
-// ===== INTERACTION HANDLER =====
+// ===== GUILD DEPLOY =====
+async function deployCommands() {
+  if (!process.env.CLIENT_ID || !process.env.GUILD_ID) {
+    console.log("❌ CLIENT_ID or GUILD_ID missing");
+    return;
+  }
+
+  const commands = client.commands.map(cmd => cmd.data.toJSON());
+  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+
+  try {
+    console.log("⚡ Deploying GUILD commands...");
+
+    await rest.put(
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID
+      ),
+      { body: commands }
+    );
+
+    console.log("✅ Commands deployed instantly!");
+
+  } catch (err) {
+    console.error("❌ Deploy error:", err);
+  }
+}
+
+// ===== INTERACTION =====
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -114,30 +134,29 @@ client.on("interactionCreate", async interaction => {
   try {
     await command.execute(interaction);
   } catch (err) {
-    console.error(`❌ Command error:`, err);
+    console.error("❌ Command error:", err);
+
+    const msg = { content: "❌ Error executing command", ephemeral: true };
 
     if (interaction.replied || interaction.deferred) {
-      interaction.followUp({ content: "❌ Error executing command", ephemeral: true });
+      interaction.followUp(msg);
     } else {
-      interaction.reply({ content: "❌ Error executing command", ephemeral: true });
+      interaction.reply(msg);
     }
   }
 });
 
 // ===== READY =====
-client.once("ready", () => {
+client.once("ready", async () => {
   console.log(`🚀 Logged in as ${client.user.tag}`);
-  console.log(`📦 Commands loaded: ${client.commands.size}`);
+  console.log(`📦 Commands: ${client.commands.size}`);
+
+  await deployCommands(); // ⚡ instant deploy
 });
 
-// ===== GLOBAL ERROR HANDLING =====
-process.on("unhandledRejection", err => {
-  console.error("❌ Unhandled Rejection:", err);
-});
-
-process.on("uncaughtException", err => {
-  console.error("❌ Uncaught Exception:", err);
-});
+// ===== ERRORS =====
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
 
 // ===== START =====
 loadCommands(commandsPath);
@@ -145,7 +164,7 @@ loadEvents();
 
 // ===== LOGIN =====
 if (!process.env.TOKEN) {
-  console.error("❌ TOKEN missing in .env");
+  console.error("❌ TOKEN missing");
   process.exit(1);
 }
 
